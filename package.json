@@ -1,0 +1,24 @@
+{
+  "name": "uni-login",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "nasti dev",
+    "build": "tsc -b && nasti build && cp -r public/. dist/",
+    "preview": "nasti preview"
+  },
+  "dependencies": {
+    "@heroui/react": "^3.0.3",
+    "@heroui/styles": "^3.0.3",
+    "chen-the-dawnstreak": "^4.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@nasti-toolchain/nasti": ">=1.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.6.0"
+  }
+}
