@@ -60,7 +60,7 @@ export default function Register() {
     <Card className="w-full">
       <Card.Header>
         <Card.Title>注册</Card.Title>
-        <Card.Description>创建紫霄实验室账号</Card.Description>
+        <Card.Description>创建紫霄实验室云账号</Card.Description>
       </Card.Header>
       <Form onSubmit={handleSubmit}>
         <Card.Content className="flex flex-col gap-4">

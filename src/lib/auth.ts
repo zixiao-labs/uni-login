@@ -1,7 +1,7 @@
 import type { UserProfile } from './types';
 
-const TOKEN_KEY = 'yuxu_token';
-const USER_KEY = 'yuxu_user';
+const TOKEN_KEY = 'zxcloud_token';
+const USER_KEY = 'zxcloud_user';
 
 export interface Session {
   token: string;

@@ -73,7 +73,9 @@ export default function Login() {
     <Card className="w-full">
       <Card.Header>
         <Card.Title>登录</Card.Title>
-        <Card.Description>使用紫霄实验室账号登录，统一访问玉虚宫各服务</Card.Description>
+        <Card.Description>
+          使用紫霄实验室云账号登录，统一访问玉虚宫 DevOps 及其他接入的服务
+        </Card.Description>
       </Card.Header>
       <Form onSubmit={handleSubmit}>
         <Card.Content className="flex flex-col gap-4">

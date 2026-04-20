@@ -14,10 +14,10 @@ export default function Layout() {
           紫
         </div>
         <h1 className="text-lg font-semibold" style={{ color: 'var(--foreground)' }}>
-          紫霄实验室
+          紫霄实验室云账号
         </h1>
         <p className="text-xs" style={{ color: 'var(--muted)' }}>
-          Zixiao Labs · Unified Login
+          Zixiao Labs Cloud Account
         </p>
       </header>
       <main className="w-full max-w-md">

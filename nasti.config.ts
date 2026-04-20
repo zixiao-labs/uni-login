@@ -5,7 +5,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: 'http://localhost:8080', changeOrigin: true },
+      // Proxy API calls to Zixiao Cloud Account's own backend (see ./server).
+      '/api': { target: 'http://localhost:5180', changeOrigin: true },
+      '/oauth': { target: 'http://localhost:5180', changeOrigin: true },
     },
   },
 });
