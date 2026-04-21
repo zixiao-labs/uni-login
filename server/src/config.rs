@@ -28,6 +28,38 @@ pub struct Config {
 }
 
 impl std::fmt::Debug for Config {
+    /// Formats `Config` for debug output while redacting sensitive fields.
+    ///
+    /// This `Debug` formatter prints a structured representation of the `Config`
+    /// but replaces sensitive values with `"<redacted>"`: the `database_url`,
+    /// `jwt_secret`, and each `ClientConfig`'s `client_secret` are not shown.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::SocketAddr;
+    /// let cfg = crate::Config {
+    ///     bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+    ///     database_url: "postgres://user:password@localhost/db".into(),
+    ///     jwt_secret: "supersecretsecretthatislongenough".into(),
+    ///     session_ttl_secs: 3600,
+    ///     access_token_ttl_secs: 3600,
+    ///     code_ttl_secs: 120,
+    ///     clients: vec![crate::ClientConfig {
+    ///         client_id: "cid".into(),
+    ///         client_secret: "client-secret".into(),
+    ///         redirect_uri_prefix: "https://example.com/".into(),
+    ///     }],
+    ///     cors_allowed_origins: None,
+    /// };
+    ///
+    /// let s = format!("{cfg:?}");
+    /// assert!(s.contains("\"database_url\": \"<redacted>\""));
+    /// assert!(s.contains("\"jwt_secret\": \"<redacted>\""));
+    /// assert!(s.contains("client_secret: <redacted>"));
+    /// assert!(s.contains("cid"));
+    /// assert!(s.contains("https://example.com/"));
+    /// ```
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Don't render jwt_secret, per-client secrets, or the database URL
         // (which may embed a password).
@@ -56,6 +88,20 @@ impl std::fmt::Debug for Config {
     }
 }
 
+/// Reads an environment variable, trims leading and trailing whitespace, and returns `None` if the variable is not set or the trimmed value is empty.
+///
+/// # Examples
+///
+/// ```
+/// std::env::remove_var("FOO");
+/// assert_eq!(env_nonempty_trimmed("FOO"), None);
+///
+/// std::env::set_var("FOO", "  value  ");
+/// assert_eq!(env_nonempty_trimmed("FOO"), Some("value".to_string()));
+///
+/// std::env::set_var("FOO", "   ");
+/// assert_eq!(env_nonempty_trimmed("FOO"), None);
+/// ```
 fn env_nonempty_trimmed(key: &str) -> Option<String> {
     std::env::var(key).ok().and_then(|s| {
         let t = s.trim();
@@ -68,6 +114,34 @@ fn env_nonempty_trimmed(key: &str) -> Option<String> {
 }
 
 impl Config {
+    /// Builds a `Config` by reading and validating required environment variables.
+    ///
+    /// Reads configuration from environment variables, applying sensible defaults where documented,
+    /// enforces a minimum JWT secret length, parses positive integer TTLs, parses and validates
+    /// the `ZXCLOUD_CLIENTS` list (format: `id,secret,redirect_uri_prefix;...`), and returns a
+    /// fully populated `Config` or an error if any required value is missing or invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `ZXCLOUD_BIND` is present but not a valid `SocketAddr`,
+    /// - `ZXCLOUD_JWT_SECRET` is missing or shorter than 32 bytes,
+    /// - any TTL environment variable is present but not a positive integer,
+    /// - any `ZXCLOUD_CLIENTS` entry is malformed (wrong field count, empty fields),
+    /// - any client's `redirect_uri_prefix` is not a valid URL.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::env;
+    /// // Minimal required env vars for demonstration
+    /// env::set_var("ZXCLOUD_JWT_SECRET", "a".repeat(32));
+    /// // Optional: override bind to a deterministic value for the example
+    /// env::set_var("ZXCLOUD_BIND", "127.0.0.1:5180");
+    ///
+    /// let cfg = server::config::Config::from_env().unwrap();
+    /// assert_eq!(cfg.bind.ip().to_string(), "127.0.0.1");
+    /// ```
     pub fn from_env() -> Result<Self> {
         let bind_raw = std::env::var("ZXCLOUD_BIND").unwrap_or_else(|_| "0.0.0.0:5180".into());
         let bind: SocketAddr = bind_raw
@@ -135,13 +209,61 @@ impl Config {
         })
     }
 
-    /// Look up a registered client by id. `None` if not present — callers
-    /// should map that to a 401/404 so the caller can't enumerate valid ids.
+    /// Finds a registered OAuth client by its client identifier.
+    ///
+    —
+    /// Returns `Some(&ClientConfig)` when a client with the given id exists, `None` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::SocketAddr;
+    /// let client = ClientConfig {
+    ///     client_id: "app".into(),
+    ///     client_secret: "secret".into(),
+    ///     redirect_uri_prefix: "https://example.com/".into(),
+    /// };
+    /// let cfg = Config {
+    ///     bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+    ///     database_url: "sqlite://:memory:".into(),
+    ///     jwt_secret: "a".repeat(32),
+    ///     session_ttl_secs: 86400,
+    ///     access_token_ttl_secs: 3600,
+    ///     code_ttl_secs: 120,
+    ///     clients: vec![client.clone()],
+    ///     cors_allowed_origins: None,
+    /// };
+    /// assert!(cfg.find_client("app").is_some());
+    /// assert!(cfg.find_client("missing").is_none());
+    /// ```
     pub fn find_client(&self, client_id: &str) -> Option<&ClientConfig> {
         self.clients.iter().find(|c| c.client_id == client_id)
     }
 }
 
+/// Read an environment variable and parse it as a positive integer, falling back to a default if unset.
+///
+/// On success, returns the parsed integer when the environment variable is present and greater than zero;
+/// returns `default` when the environment variable is not set. If the variable is present but cannot be
+/// parsed as a positive integer, returns an error with context containing the environment key and value.
+///
+/// # Examples
+///
+/// ```
+/// use anyhow::Result;
+///
+/// // ensure no env var is set
+/// std::env::remove_var("TEST_POSITIVE_TTL");
+/// assert_eq!(super::parse_positive_env("TEST_POSITIVE_TTL", 42).unwrap(), 42);
+///
+/// // valid positive value
+/// std::env::set_var("TEST_POSITIVE_TTL", "10");
+/// assert_eq!(super::parse_positive_env("TEST_POSITIVE_TTL", 42).unwrap(), 10);
+///
+/// // invalid or non-positive values produce an error
+/// std::env::set_var("TEST_POSITIVE_TTL", "0");
+/// assert!(super::parse_positive_env("TEST_POSITIVE_TTL", 42).is_err());
+/// ```
 fn parse_positive_env(key: &str, default: i64) -> Result<i64> {
     match std::env::var(key) {
         Ok(v) => {
@@ -161,6 +283,34 @@ fn parse_positive_env(key: &str, default: i64) -> Result<i64> {
 mod tests {
     use super::*;
 
+    /// Verifies that the `Debug` implementation for `Config` redacts sensitive values while still showing non-sensitive fields.
+    ///
+    /// The test checks that `jwt_secret`, `database_url` (sensitive path/password), and each client's `client_secret` are omitted from the formatted debug output, and that `client_id` and `redirect_uri_prefix` remain present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = Config {
+    ///     bind: "127.0.0.1:5180".parse().unwrap(),
+    ///     database_url: "sqlite:///secret-path/zxcloud.db?password=pw".into(),
+    ///     jwt_secret: "x".repeat(48),
+    ///     session_ttl_secs: 3600,
+    ///     access_token_ttl_secs: 3600,
+    ///     code_ttl_secs: 60,
+    ///     clients: vec![ClientConfig {
+    ///         client_id: "yuxu".into(),
+    ///         client_secret: "oauth-secret".into(),
+    ///         redirect_uri_prefix: "http://localhost:8080/".into(),
+    ///     }],
+    ///     cors_allowed_origins: None,
+    /// };
+    /// let rendered = format!("{cfg:?}");
+    /// assert!(!rendered.contains("oauth-secret"));
+    /// assert!(!rendered.contains(&"x".repeat(48)));
+    /// assert!(!rendered.contains("/secret-path/"));
+    /// assert!(rendered.contains("yuxu"));
+    /// assert!(rendered.contains("http://localhost:8080/"));
+    /// ```
     #[test]
     fn debug_impl_redacts_secrets() {
         let cfg = Config {

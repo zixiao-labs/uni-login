@@ -34,6 +34,15 @@ function beginGithubOauth() {
   window.location.href = `https://github.com/login/oauth/authorize?${params.toString()}`;
 }
 
+/**
+ * Render the login page with a username/password form, GitHub OAuth option, and error/loading state handling.
+ *
+ * The component reads an optional `return` URL query parameter to redirect after successful authentication,
+ * validates form inputs, submits credentials to the authentication API, stores session on success, and redirects.
+ * It also initiates GitHub OAuth when the corresponding button is pressed and displays validation or API error messages.
+ *
+ * @returns A React element that renders the login form, controls for GitHub OAuth, and associated UI state.
+ */
 export default function Login() {
   const [params] = useSearchParams();
   const returnTo = params.get('return') || CONSOLE_URL;

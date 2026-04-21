@@ -6,6 +6,13 @@ import Register from './pages/register';
 import OauthCallback from './pages/oauth/callback';
 import OauthAuthorize from './pages/oauth/authorize';
 
+/**
+ * Root application component that defines the client-side routing tree wrapped by the app layout.
+ *
+ * Renders routes for the index page, login, register, OAuth authorize, and OAuth callback paths.
+ *
+ * @returns A React element containing the configured router and nested routes
+ */
 export default function App() {
   return (
     <ChenRouter>

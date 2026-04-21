@@ -31,6 +31,22 @@ struct ErrBody<'a> {
 }
 
 impl IntoResponse for AppError {
+    /// Convert an `AppError` into an HTTP response with an appropriate status code and JSON body.
+    ///
+    /// The response body is a JSON object `{ "error": <kind>, "message": <message> }` where
+    /// `error` is a static error kind label and `message` is the human-readable message.
+    /// For `Sqlx` and `Anyhow` errors (except `sqlx::Error::RowNotFound`), the error is logged
+    /// and the response uses status `500` with message `"internal server error"`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use axum::response::IntoResponse;
+    /// use axum::http::StatusCode;
+    ///
+    /// let resp = crate::error::AppError::NotFound("item".into()).into_response();
+    /// assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    /// ```
     fn into_response(self) -> Response {
         let (status, kind) = match &self {
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),

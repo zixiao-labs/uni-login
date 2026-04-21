@@ -45,6 +45,29 @@ pub struct UserRecord {
 }
 
 impl UserRecord {
+    /// Create a `UserProfile` by copying the public profile fields from this `UserRecord`.
+    ///
+    /// The returned `UserProfile` contains the record's `id`, `username`, `email`,
+    /// `display_name`, `avatar_url`, `bio`, `created_at`, and `updated_at`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let rec = UserRecord {
+    ///     id: "u1".into(),
+    ///     username: "alice".into(),
+    ///     email: "alice@example.com".into(),
+    ///     display_name: "Alice".into(),
+    ///     avatar_url: "".into(),
+    ///     bio: "".into(),
+    ///     password_hash: "$argon2id$...".into(),
+    ///     created_at: 1_700_000_000,
+    ///     updated_at: 1_700_000_000,
+    /// };
+    /// let profile = rec.to_profile();
+    /// assert_eq!(profile.id, rec.id);
+    /// assert_eq!(profile.username, rec.username);
+    /// ```
     pub fn to_profile(&self) -> UserProfile {
         UserProfile {
             id: self.id.clone(),
@@ -60,6 +83,25 @@ impl UserRecord {
 }
 
 impl From<UserRecord> for UserProfile {
+    /// Create a UserProfile from a UserRecord by moving the record's profile fields.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let rec = UserRecord {
+    ///     id: "user-1".to_string(),
+    ///     username: "alice".to_string(),
+    ///     email: "alice@example.com".to_string(),
+    ///     display_name: "Alice".to_string(),
+    ///     avatar_url: "".to_string(),
+    ///     bio: "".to_string(),
+    ///     password_hash: "hashed".to_string(),
+    ///     created_at: 0,
+    ///     updated_at: 0,
+    /// };
+    /// let profile: UserProfile = UserProfile::from(rec);
+    /// assert_eq!(profile.username, "alice");
+    /// ```
     fn from(u: UserRecord) -> Self {
         UserProfile {
             id: u.id,
@@ -87,6 +129,16 @@ pub struct SessionClaims {
 
 pub const SESSION_AUDIENCE: &str = "session";
 
+/// Hashes a password with Argon2 using a randomly generated salt.
+///
+/// Returns the Argon2-encoded password hash as a `String` on success, or an `AppError::Anyhow` if hashing fails.
+///
+/// # Examples
+///
+/// ```
+/// let hashed = hash_password("s3cret").expect("hashing failed");
+/// assert!(hashed.contains("$argon2"));
+/// ```
 pub fn hash_password(plain: &str) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
@@ -95,6 +147,20 @@ pub fn hash_password(plain: &str) -> Result<String, AppError> {
         .map_err(|e| AppError::Anyhow(anyhow::anyhow!("hash_password: {e}")))
 }
 
+/// Verifies whether a plaintext password matches a stored Argon2 password hash.
+///
+/// Returns `Ok(true)` if `plain` matches `hash`, `Ok(false)` if it does not,
+/// and `Err(AppError::Anyhow)` if the stored hash cannot be parsed or another
+/// hashing-related error occurs.
+///
+/// # Examples
+///
+/// ```
+/// // Create a hash (helper `hash_password` is assumed available in the same module).
+/// let stored = hash_password("s3cr3t").expect("hashing should succeed");
+/// assert!(verify_password("s3cr3t", &stored).unwrap());
+/// assert!(!verify_password("wrong", &stored).unwrap());
+/// ```
 pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError> {
     let parsed = PasswordHash::new(hash)
         .map_err(|e| AppError::Anyhow(anyhow::anyhow!("parse password hash: {e}")))?;
@@ -103,6 +169,19 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError> {
         .is_ok())
 }
 
+/// Creates a signed session JWT containing the user id as `sub`, issued-at (`iat`), expiry (`exp` = now + `ttl_secs`), and `aud`.
+///
+/// # Returns
+///
+/// `Ok(String)` with the encoded JWT on success, or `Err(AppError::Anyhow(_))` if encoding fails.
+///
+/// # Examples
+///
+/// ```
+/// let secret = b"my-secret-key";
+/// let token = issue_jwt(secret, "user-123", 3600, "session").unwrap();
+/// assert!(!token.is_empty());
+/// ```
 pub fn issue_jwt(
     secret: &[u8],
     user_id: &str,
@@ -124,6 +203,43 @@ pub fn issue_jwt(
     .map_err(|e| AppError::Anyhow(anyhow::anyhow!("issue jwt: {e}")))
 }
 
+/// Verifies a JWT's signature, expiration, and audience and returns its session claims.
+
+///
+
+/// The provided `secret` is used to verify the token signature; the token's `aud` claim must match `audience`.
+
+///
+
+/// # Examples
+
+///
+
+/// ```
+
+/// let secret = b"my-jwt-secret";
+
+/// let token = "eyJ..."; // a JWT string
+
+/// let result = verify_jwt(secret, token, "session");
+
+/// match result {
+
+///     Ok(claims) => println!("user id: {}", claims.sub),
+
+///     Err(err) => eprintln!("verification failed: {:?}", err),
+
+/// }
+
+/// ```
+
+///
+
+/// # Returns
+
+///
+
+/// On success returns the decoded `SessionClaims`. On failure returns `AppError::Unauthorized("invalid or expired token")`.
 pub fn verify_jwt(secret: &[u8], token: &str, audience: &str) -> Result<SessionClaims, AppError> {
     let mut validation = Validation::default();
     validation.set_audience(&[audience]);
@@ -132,7 +248,30 @@ pub fn verify_jwt(secret: &[u8], token: &str, audience: &str) -> Result<SessionC
         .map_err(|_| AppError::Unauthorized("invalid or expired token".into()))
 }
 
-/// Extract the Bearer token from an Authorization header.
+/// Get the bearer token string from the `Authorization` header.
+///
+/// Returns `Some(token)` containing the header value with the leading `"Bearer "` (case-insensitive)
+/// prefix removed, or `None` if the header is missing, malformed, empty, or does not use the Bearer scheme.
+///
+/// # Examples
+///
+/// ```
+/// use http::header::AUTHORIZATION;
+/// use http::HeaderMap;
+/// use http::HeaderValue;
+///
+/// let mut headers = HeaderMap::new();
+/// headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer abc.def.ghi"));
+/// assert_eq!(crate::auth::bearer_token(&headers), Some("abc.def.ghi".to_string()));
+///
+/// let mut headers = HeaderMap::new();
+/// headers.insert(AUTHORIZATION, HeaderValue::from_static("bearer xyz"));
+/// assert_eq!(crate::auth::bearer_token(&headers), Some("xyz".to_string()));
+///
+/// let mut headers = HeaderMap::new();
+/// headers.insert(AUTHORIZATION, HeaderValue::from_static("Basic foo"));
+/// assert_eq!(crate::auth::bearer_token(&headers), None);
+/// ```
 pub fn bearer_token(headers: &HeaderMap) -> Option<String> {
     let hv = headers.get(AUTHORIZATION)?;
     let s = hv.to_str().ok()?;
@@ -167,6 +306,30 @@ pub struct AuthResponse {
     pub user: UserProfile,
 }
 
+/// Register a new user, persist their record, issue a session JWT, and return the token plus the created profile.
+///
+/// Validations:
+/// - `username` and `email` are trimmed and must not be empty (otherwise returns `AppError::BadRequest`).
+/// - `password` must be at least 8 characters (otherwise returns `AppError::BadRequest`).
+/// - If the username or email is already taken the function returns `AppError::Conflict`.
+/// On success returns an `AuthResponse` containing the issued session token and the new `UserProfile`.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use server::auth::{register, RegisterRequest, AppState};
+/// # use axum::{extract::State, Json};
+/// # async fn example(state: AppState) {
+/// let req = RegisterRequest {
+///     username: "alice".into(),
+///     email: "alice@example.com".into(),
+///     password: "s3cur3pass".into(),
+///     display_name: "Alice".into(),
+/// };
+/// // handlers are async and normally invoked by the web framework:
+/// let _resp = register(State(state), Json(req)).await;
+/// # }
+/// ```
 pub async fn register(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
@@ -223,6 +386,25 @@ pub async fn register(
     }))
 }
 
+/// Authenticates a user by username or email and password and returns a session token together with the user's profile.
+///
+/// Looks up a user matching `req.username_or_email`, verifies `req.password` against the stored password hash, and issues a session JWT scoped to the session audience when credentials are valid.
+/// On success returns `Ok(Json(AuthResponse))` containing the issued token and the corresponding `UserProfile`.
+/// Returns `Err(AppError::Unauthorized("invalid credentials"))` if no matching user is found or the password verification fails.
+///
+/// # Examples
+///
+/// ```
+/// // Example usage in an async context:
+/// // let result = login(State(app_state), Json(login_request)).await;
+/// // match result {
+/// //     Ok(Json(auth)) => {
+/// //         assert!(!auth.token.is_empty());
+/// //         assert_eq!(auth.user.username, "alice");
+/// //     }
+/// //     Err(e) => panic!("authentication failed: {:?}", e),
+/// // }
+/// ```
 pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
@@ -245,6 +427,36 @@ pub async fn login(
     }))
 }
 
+/// Return the authenticated user's profile extracted from a session bearer token.
+///
+/// This handler extracts a bearer token from the request headers, verifies the token's
+/// signature, expiry, and audience, looks up the user by the token subject, and returns
+/// the user's profile as JSON. If the bearer token is missing or invalid, the function
+/// returns an `AppError::Unauthorized`; if the referenced user does not exist, it returns
+/// an `AppError::NotFound`.
+///
+/// # Returns
+///
+/// `Json<UserProfile>` containing the authenticated user's profile.
+///
+/// # Examples
+///
+/// ```no_run
+/// use axum::{http::HeaderMap, Json, extract::State};
+/// use server::auth::me;
+/// use server::AppState;
+/// use server::models::UserProfile;
+///
+/// #[tokio::main]
+/// async fn main() {
+///     // This example is illustrative: in a real server the `State` and `HeaderMap` come from Axum.
+///     let state = /* construct AppState with DB and config */ unimplemented!();
+///     let headers = HeaderMap::new(); // should contain "Authorization: Bearer <token>"
+///
+///     // Call the handler (in real usage Axum invokes this).
+///     let _result: Result<Json<UserProfile>, _> = me(State(state), headers).await;
+/// }
+/// ```
 pub async fn me(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -258,6 +470,28 @@ pub async fn me(
     Ok(Json(UserProfile::from(user)))
 }
 
+/// Fetches a user record by username or email from the database.
+///
+/// Searches the `users` table for a row where `username` or `email` equals `ident` and returns
+/// the corresponding `UserRecord` when found.
+///
+/// `ident` may be either a username or an email address. Database/query errors are returned as
+/// `AppError`.
+///
+/// # Returns
+///
+/// `Some(UserRecord)` if a matching user exists, `None` if no match is found.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example(pool: &DbPool) {
+/// let res = find_user(pool, "alice@example.com").await.unwrap();
+/// if let Some(user) = res {
+///     assert!(user.email == "alice@example.com" || user.username == "alice");
+/// }
+/// # }
+/// ```
 async fn find_user(pool: &DbPool, ident: &str) -> Result<Option<UserRecord>, AppError> {
     let row = sqlx::query(
         "SELECT id, username, email, display_name, avatar_url, bio, password_hash, created_at, updated_at \
@@ -269,6 +503,22 @@ async fn find_user(pool: &DbPool, ident: &str) -> Result<Option<UserRecord>, App
     row.map(user_from_row).transpose()
 }
 
+/// Fetches a user record by its id from the database.
+///
+/// Returns `Some(UserRecord)` when a user with the given `id` exists, `None` if no matching row is found.
+/// Database or row-mapping failures are returned as an `AppError`.
+///
+/// # Examples
+///
+/// ```
+/// # async fn example(pool: &DbPool) -> Result<(), AppError> {
+/// let maybe_user = find_user_by_id(pool, "user-id-123").await?;
+/// if let Some(user) = maybe_user {
+///     assert_eq!(user.id, "user-id-123");
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub async fn find_user_by_id(pool: &DbPool, id: &str) -> Result<Option<UserRecord>, AppError> {
     let row = sqlx::query(
         "SELECT id, username, email, display_name, avatar_url, bio, password_hash, created_at, updated_at \
@@ -280,6 +530,29 @@ pub async fn find_user_by_id(pool: &DbPool, id: &str) -> Result<Option<UserRecor
     row.map(user_from_row).transpose()
 }
 
+/// Constructs a `UserRecord` by extracting the expected columns from a `SqliteRow`.
+///
+/// The function reads the following named columns from `row`: `id`, `username`, `email`,
+/// `display_name`, `avatar_url`, `bio`, `password_hash`, `created_at`, and `updated_at`.
+/// Returns `Err(AppError)` if any column is missing or cannot be converted to the expected type.
+///
+/// # Parameters
+///
+/// - `row`: A `sqlx::sqlite::SqliteRow` containing columns for a user record.
+///
+/// # Returns
+///
+/// `Ok(UserRecord)` with all fields populated on success, `Err(AppError)` if column extraction fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use sqlx::sqlite::SqliteRow;
+/// # use crate::auth::{user_from_row, UserRecord};
+/// // `row` would typically come from `sqlx::query(...).fetch_one(&pool).await?`
+/// // let row: SqliteRow = ...;
+/// // let user: UserRecord = user_from_row(row)?;
+/// ```
 fn user_from_row(row: sqlx::sqlite::SqliteRow) -> Result<UserRecord, AppError> {
     Ok(UserRecord {
         id: row.try_get("id")?,

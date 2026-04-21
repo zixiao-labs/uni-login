@@ -1,5 +1,10 @@
 import { Outlet } from 'chen-the-dawnstreak';
 
+/**
+ * Page layout for authentication and account pages that provides a branded header, centered content area, and footer.
+ *
+ * @returns The root JSX element containing a logo, title and subtitle in the header, a centered main container that renders routed children via <Outlet />, and a footer showing the current year.
+ */
 export default function Layout() {
   return (
     <div

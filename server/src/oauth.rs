@@ -52,23 +52,96 @@ pub struct AuthCodeStore {
 }
 
 impl AuthCodeStore {
+    /// Creates a new, empty AuthCodeStore.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let store = AuthCodeStore::new();
+    /// // store can be used to insert and take authorization codes
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Insert a new code. `code` is opaque to this store.
+    /// Stores an authorization code and its associated metadata in the in-memory store,
+    /// replacing any existing entry for the same code.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let store = AuthCodeStore::new();
+    /// let code = "abc123".to_string();
+    /// let entry = AuthCode {
+    ///     user_id: "user1".into(),
+    ///     client_id: "client1".into(),
+    ///     redirect_uri: "https://example.com/cb".into(),
+    ///     expires_at: 1_000_000_000,
+    /// };
+    /// store.insert(code.clone(), entry);
+    /// assert!(store.take(&code).is_some());
+    /// ```
     pub fn insert(&self, code: String, entry: AuthCode) {
         self.inner.insert(code, entry);
     }
 
-    /// Take the code out of the store (single-use). Returns None if the
-    /// code is unknown. Callers are responsible for checking `expires_at`.
+    /// Removes and returns a stored authorization code entry for single-use.
+    ///
+    /// Callers must verify the returned entry's `expires_at` timestamp before trusting it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let store = AuthCodeStore::new();
+    /// let code = "c1".to_string();
+    /// let entry = AuthCode {
+    ///     user_id: "u".into(),
+    ///     client_id: "cid".into(),
+    ///     redirect_uri: "https://example.com/cb".into(),
+    ///     expires_at: 1_000_000_000,
+    /// };
+    /// store.insert(code.clone(), entry);
+    /// let taken = store.take(&code);
+    /// assert!(taken.is_some());
+    /// // subsequent takes return None (single-use)
+    /// assert!(store.take(&code).is_none());
+    /// ```
     pub fn take(&self, code: &str) -> Option<AuthCode> {
         self.inner.remove(code).map(|(_, v)| v)
     }
 
-    /// Best-effort garbage collection. Called at the start of each token
-    /// exchange so an idle service doesn't accumulate dead codes forever.
+    /// Removes expired authorization codes from the in-memory store.
+    ///
+    /// This performs a best-effort sweep using the current UTC time and discards
+    /// entries whose `expires_at` is less than or equal to now.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let store = AuthCodeStore::new();
+    /// let now = chrono::Utc::now().timestamp();
+    /// store.insert(
+    ///     "expired".into(),
+    ///     AuthCode {
+    ///         user_id: "user".into(),
+    ///         client_id: "client".into(),
+    ///         redirect_uri: "https://example.com/cb".into(),
+    ///         expires_at: now - 1,
+    ///     },
+    /// );
+    /// store.insert(
+    ///     "valid".into(),
+    ///     AuthCode {
+    ///         user_id: "user".into(),
+    ///         client_id: "client".into(),
+    ///         redirect_uri: "https://example.com/cb".into(),
+    ///         expires_at: now + 3600,
+    ///     },
+    /// );
+    /// store.gc();
+    /// assert!(store.take("expired").is_none());
+    /// assert!(store.take("valid").is_some());
+    /// ```
     pub fn gc(&self) {
         let now = Utc::now().timestamp();
         self.inner.retain(|_, entry| entry.expires_at > now);
@@ -95,10 +168,33 @@ pub struct AuthorizeResponse {
     pub redirect_url: String,
 }
 
-/// Mint an authorization code bound to the currently-logged-in user and the
-/// requested client. The SPA supplies the user's session JWT in
-/// `Authorization: Bearer <...>`; we never trust query-parameter identity
-/// here even though the same info reaches us via the URL.
+/// Mint an authorization code for the authenticated user and return a redirect URL
+/// that includes the code (and the original `state` if provided).
+///
+/// Validates that `response_type` is `"code"`, requires a session bearer token,
+/// verifies the session JWT, ensures the client exists and the `redirect_uri`
+/// is allowed for that client, and stores a single-use code bound to the
+/// user, client, and redirect URI with a configured TTL. The returned redirect
+/// URL is the parsed `redirect_uri` with `code=<minted code>` and optional
+/// `state=<state>` query parameters appended.
+///
+/// # Errors
+///
+/// Returns `AppError::BadRequest` for invalid `response_type` or malformed
+/// `redirect_uri`, and `AppError::Unauthorized` for missing/invalid session
+/// token or unknown client. Other JWT verification failures are propagated.
+///
+/// # Examples
+///
+/// ```
+/// // This example illustrates the shape of the redirect URL produced:
+/// let redirect_uri = "https://example.com/callback";
+/// let code = "opaque_code_123";
+/// let url = url::Url::parse(redirect_uri).unwrap();
+/// let mut url = url::Url::parse(redirect_uri).unwrap();
+/// url.query_pairs_mut().append_pair("code", code);
+/// assert!(url.as_str().contains("code=opaque_code_123"));
+/// ```
 pub async fn authorize(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -169,9 +265,18 @@ pub struct TokenResponse {
     pub expires_in: i64,
 }
 
-/// Standard OAuth token exchange. Accepts client credentials via either
-/// HTTP Basic auth (preferred) or `client_id` + `client_secret` in the form
-/// body, matching what most OAuth client libraries send.
+/// Exchange an authorization code for an access token.
+///
+/// Validates client credentials (HTTP Basic auth preferred; falls back to
+/// `client_id`/`client_secret` in the form body), ensures the provided
+/// authorization code is single-use, unexpired, and bound to the same
+/// client and redirect URI it was issued for, then issues a signed access
+/// token for the OAuth audience.
+///
+/// # Returns
+///
+/// `TokenResponse` containing the issued access token JWT, the token type
+/// set to `"Bearer"`, and `expires_in` with the token lifetime in seconds.
 pub async fn token(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -236,9 +341,25 @@ pub async fn token(
     }))
 }
 
-/// Resolve an access token to the user profile the relying party needs to
-/// create/update its local record. `sub` is the stable identifier the
-/// client uses to key future logins.
+/// Resolve an access token to the user's OAuth profile for the relying party.
+///
+/// Verifies the Bearer access token, loads the account identified by the token's `sub` claim,
+/// and returns a `UserInfoResponse` containing the stable subject and basic profile fields.
+/// Returns `Unauthorized` if the bearer token is missing, invalid, or if the account no longer exists.
+///
+/// # Examples
+///
+/// ```
+/// let resp = UserInfoResponse {
+///     sub: "user-123".into(),
+///     username: "alice".into(),
+///     email: "alice@example.com".into(),
+///     name: "Alice".into(),
+///     avatar_url: "https://example.com/avatar.png".into(),
+///     bio: "Example user".into(),
+/// };
+/// assert_eq!(resp.username, "alice");
+/// ```
 pub async fn userinfo(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -274,6 +395,19 @@ pub struct UserInfoResponse {
     pub bio: String,
 }
 
+/// Validates that a redirect URI is a well-formed URL and permitted for the given client.
+///
+/// Returns `Err(AppError::BadRequest(_))` if the URI is not a valid URL or does not start with
+/// the client's configured `redirect_uri_prefix`.
+///
+/// # Examples
+///
+/// ```
+/// let client = ClientConfig { redirect_uri_prefix: "https://example.com/cb".into(), client_id: "c".into(), client_secret: "s".into() };
+/// assert!(ensure_redirect_uri_allowed(&client, "https://example.com/cb/path").is_ok());
+/// assert!(ensure_redirect_uri_allowed(&client, "not-a-url").is_err());
+/// assert!(ensure_redirect_uri_allowed(&client, "https://evil.com/cb").is_err());
+/// ```
 fn ensure_redirect_uri_allowed(client: &ClientConfig, redirect_uri: &str) -> Result<(), AppError> {
     // Parsing catches silly cases (missing scheme) before the prefix check
     // has a chance to accept a URL the browser would never actually load.
@@ -290,6 +424,29 @@ fn ensure_redirect_uri_allowed(client: &ClientConfig, redirect_uri: &str) -> Res
     Ok(())
 }
 
+/// Extracts HTTP Basic credentials from the `Authorization` header.
+///
+/// Returns a tuple `(client_id, client_secret)` when a valid Basic auth header
+/// is present and decodes to `id:secret`. Returns `(None, None)` if the header
+/// is missing, not Basic auth, not valid base64, not UTF-8, or does not contain
+/// a `:` separator.
+///
+/// # Examples
+///
+/// ```
+/// use http::header::AUTHORIZATION;
+/// use http::HeaderMap;
+///
+/// let mut headers = HeaderMap::new();
+/// headers.insert(
+///     AUTHORIZATION,
+///     "Basic dGVzdGlkOnNlY3JldA==".parse().unwrap(), // "testid:secret"
+/// );
+///
+/// let (id, secret) = parse_basic_auth(&headers);
+/// assert_eq!(id.as_deref(), Some("testid"));
+/// assert_eq!(secret.as_deref(), Some("secret"));
+/// ```
 fn parse_basic_auth(headers: &HeaderMap) -> (Option<String>, Option<String>) {
     let Some(hv) = headers.get(AUTHORIZATION) else {
         return (None, None);
@@ -318,6 +475,22 @@ fn parse_basic_auth(headers: &HeaderMap) -> (Option<String>, Option<String>) {
     }
 }
 
+/// Performs a constant-time equality check of two byte slices.
+///
+/// This function compares the contents without data-dependent early exits to
+/// mitigate timing side channels.
+///
+/// # Returns
+///
+/// `true` if the slices have identical contents and equal length, `false` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// assert!(constant_time_eq(b"secret", b"secret"));
+/// assert!(!constant_time_eq(b"secret", b"secreT"));
+/// assert!(!constant_time_eq(b"short", b"shorter"));
+/// ```
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -329,6 +502,14 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
+/// Generates a URL-safe opaque token by encoding `bytes` cryptographically secure random bytes using base64 (URL-safe, no padding).
+///
+/// # Examples
+///
+/// ```
+/// let tok = random_opaque_token(32);
+/// assert!(!tok.is_empty());
+/// ```
 fn random_opaque_token(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
     rand::thread_rng().fill_bytes(&mut buf);
@@ -385,6 +566,24 @@ mod tests {
         assert_eq!(parse_basic_auth(&empty), (None, None));
     }
 
+    /// Ensures an authorization code is single-use: taking it removes it from the store.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let store = AuthCodeStore::new();
+    /// store.insert(
+    ///     "c".into(),
+    ///     AuthCode {
+    ///         user_id: "u".into(),
+    ///         client_id: "cid".into(),
+    ///         redirect_uri: "http://x/".into(),
+    ///         expires_at: i64::MAX,
+    ///     },
+    /// );
+    /// assert!(store.take("c").is_some());
+    /// assert!(store.take("c").is_none());
+    /// ```
     #[test]
     fn auth_code_store_is_single_use() {
         let store = AuthCodeStore::new();

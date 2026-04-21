@@ -5,14 +5,14 @@ import { apiFetch, ApiError } from '../../lib/api';
 import { loadSession } from '../../lib/auth';
 
 /**
- * OAuth 2.0 authorize entry point for relying parties.
+ * Render the OAuth 2.0 authorization page shown to a user when a relying party requests authorization.
  *
- * The relying party sends the browser here with the standard
- * `?response_type=code&client_id=...&redirect_uri=...&state=...&scope=...`
- * query. We inspect the current session; if there is none, we bounce to
- * /login?return=<this full URL>. Otherwise we show a consent screen and
- * POST to /api/oauth/authorize on click, then follow the `redirect_url`
- * the server returns (which already carries `?code=...&state=...`).
+ * If the user is not authenticated, redirects the browser to the login page with a return URL back to this authorize endpoint.
+ * When authenticated and the request is valid, shows a consent UI that either:
+ * - Initiates authorization by POSTing the OAuth parameters to /api/oauth/authorize and then navigates to the server-provided redirect URL on success, or
+ * - Returns the OAuth error response to the relying party by navigating to `redirect_uri?error=access_denied` (including `state` when present) when the user denies.
+ *
+ * @returns The React element rendering the authorization UI or interim redirect state.
  */
 export default function OAuthAuthorize() {
   const [params] = useSearchParams();
@@ -37,6 +37,11 @@ export default function OAuthAuthorize() {
   const missing = !clientId || !redirectUri;
   const wrongType = responseType !== 'code';
 
+  /**
+   * Initiates the OAuth authorization request and navigates the browser to the redirect URL returned by the server on success.
+   *
+   * Sets local busy state while the request is in flight. On failure, sets the local error state to the server error message when available, or to "授权失败，请稍后重试", and clears the busy state.
+   */
   async function handleAuthorize() {
     setError(null);
     setBusy(true);
@@ -61,6 +66,13 @@ export default function OAuthAuthorize() {
     }
   }
 
+  /**
+   * Navigates the browser to return an OAuth 2.0 error response to the relying party.
+   *
+   * If `redirectUri` is not provided or cannot be parsed as a URL, navigates to `/`.
+   * Otherwise navigates to `redirectUri` with `error=access_denied` added to its query string
+   * and includes the original `state` if present.
+   */
   function handleDeny() {
     if (!redirectUri) {
       window.location.href = '/';

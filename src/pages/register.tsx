@@ -17,6 +17,14 @@ import type { AuthResponse, RegisterRequest } from '../lib/types';
 
 const CONSOLE_URL = import.meta.env.VITE_MAIN_CONSOLE_URL || 'http://localhost:5174/';
 
+/**
+ * Render a registration page with fields for username, email, optional display name, and password.
+ *
+ * Handles client-side validation, sends a registration request to the server, sets the session on success,
+ * redirects the browser to the console URL, and shows form-level error messages and a loading state while submitting.
+ *
+ * @returns The React element for the registration UI.
+ */
 export default function Register() {
   const [formError, setFormError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);

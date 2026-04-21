@@ -28,6 +28,22 @@ use tower_http::{
 
 use crate::oauth::AuthCodeStore;
 
+/// Starts the HTTP server and initializes shared application state.
+///
+/// Initializes environment, tracing, configuration, database connection and migrations,
+/// builds CORS and middleware layers, registers HTTP routes, then binds to the configured
+/// address and serves requests until shutdown.
+///
+/// # Returns
+///
+/// `Ok(())` when the server exits cleanly, or an error if startup or runtime initialization fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// // Run the server from the project root:
+/// // $ cargo run --bin server
+/// ```
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -68,6 +84,21 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Builds a CORS layer configured from an optional origins specification.
+///
+/// The returned layer permits GET, POST, PUT, DELETE, PATCH and OPTIONS methods,
+/// allows the `Authorization`, `Content-Type`, and `Accept` headers, and
+/// disallows credentials. The `raw` parameter controls allowed origins:
+/// - `None` or `Some("")`: no explicit origins are added (base policy).
+/// - `Some("*")`: allow any origin.
+/// - `Some(list)`: a comma-separated list of origins; each entry is trimmed and
+///   parsed as an HTTP header value. Parsing failures produce an error.
+///
+/// # Examples
+///
+/// ```
+/// let layer = build_cors_layer(Some("*")).unwrap();
+/// ```
 fn build_cors_layer(raw: Option<&str>) -> Result<CorsLayer> {
     use axum::http::Method;
     use axum::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
