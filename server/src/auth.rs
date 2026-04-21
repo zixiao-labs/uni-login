@@ -359,7 +359,7 @@ pub async fn register(
         created_at: now,
         updated_at: now,
     };
-    sqlx::query(
+    if let Err(e) = sqlx::query(
         "INSERT INTO users (id, username, email, display_name, avatar_url, bio, password_hash, created_at, updated_at) \
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
     )
@@ -373,7 +373,15 @@ pub async fn register(
     .bind(rec.created_at)
     .bind(rec.updated_at)
     .execute(&state.db)
-    .await?;
+    .await
+    {
+        if let sqlx::Error::Database(db_err) = &e {
+            if db_err.is_unique_violation() {
+                return Err(AppError::Conflict("username or email already taken".into()));
+            }
+        }
+        return Err(e.into());
+    }
     let token = issue_jwt(
         state.config.jwt_secret.as_bytes(),
         &rec.id,

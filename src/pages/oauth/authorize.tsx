@@ -69,24 +69,42 @@ export default function OAuthAuthorize() {
   /**
    * Navigates the browser to return an OAuth 2.0 error response to the relying party.
    *
-   * If `redirectUri` is not provided or cannot be parsed as a URL, navigates to `/`.
-   * Otherwise navigates to `redirectUri` with `error=access_denied` added to its query string
-   * and includes the original `state` if present.
+   * Validates the client_id/redirect_uri pair with the server before redirecting to
+   * prevent open-redirect abuse. If validation succeeds, navigates to `redirectUri`
+   * with `error=access_denied` (and `state` when present). On validation failure or
+   * missing redirectUri, navigates to `/`.
    */
-  function handleDeny() {
-    if (!redirectUri) {
+  async function handleDeny() {
+    if (!redirectUri || !clientId) {
       window.location.href = '/';
       return;
     }
-    // Mirror the OAuth 2.0 error response: send the user back to the
-    // relying party with `error=access_denied`. The RP decides how to
-    // surface that to the user — we don't render our own deny screen here.
+
+    setBusy(true);
     try {
+      // Validate the client_id/redirect_uri pair with the server to ensure
+      // it's an allowed redirect target before performing the client-side redirect.
+      // We use the authorize endpoint with a special check: if the server accepts
+      // the parameters (returns redirect_url), we know the redirect_uri is valid.
+      // Then we construct our own error redirect instead of following the success path.
+      await apiFetch<{ redirect_url: string }>('/api/oauth/authorize', {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: clientId,
+          redirect_uri: redirectUri,
+          response_type: responseType,
+          state: state || null,
+          scope: scope || null,
+        }),
+      });
+
+      // Server validated the redirect_uri, safe to redirect with error
       const u = new URL(redirectUri);
       u.searchParams.set('error', 'access_denied');
       if (state) u.searchParams.set('state', state);
       window.location.href = u.toString();
     } catch {
+      // Validation failed or other error — don't redirect to potentially malicious URL
       window.location.href = '/';
     }
   }

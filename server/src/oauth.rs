@@ -221,6 +221,7 @@ pub async fn authorize(
 
     // `sub` is the Zixiao Cloud user id; the client receives it as `sub`
     // in the userinfo response and stores it as `zixiao_cloud_id` locally.
+    state.codes.gc();
     let code = random_opaque_token(32);
     let now = Utc::now().timestamp();
     state.codes.insert(
@@ -409,19 +410,66 @@ pub struct UserInfoResponse {
 /// assert!(ensure_redirect_uri_allowed(&client, "https://evil.com/cb").is_err());
 /// ```
 fn ensure_redirect_uri_allowed(client: &ClientConfig, redirect_uri: &str) -> Result<(), AppError> {
-    // Parsing catches silly cases (missing scheme) before the prefix check
-    // has a chance to accept a URL the browser would never actually load.
-    if url::Url::parse(redirect_uri).is_err() {
-        return Err(AppError::BadRequest(
-            "redirect_uri is not a valid URL".into(),
-        ));
-    }
-    if !redirect_uri.starts_with(&client.redirect_uri_prefix) {
+    let redirect_url = url::Url::parse(redirect_uri)
+        .map_err(|_| AppError::BadRequest("redirect_uri is not a valid URL".into()))?;
+    let prefix_url = url::Url::parse(&client.redirect_uri_prefix)
+        .map_err(|_| AppError::BadRequest("redirect_uri_prefix is not a valid URL".into()))?;
+
+    // Exact match on scheme, host, and port
+    if redirect_url.scheme() != prefix_url.scheme()
+        || redirect_url.host_str() != prefix_url.host_str()
+        || redirect_url.port_or_known_default() != prefix_url.port_or_known_default()
+    {
         return Err(AppError::BadRequest(
             "redirect_uri is not allowed for this client".into(),
         ));
     }
-    Ok(())
+
+    // Path-prefix semantics: either exact match or prefix followed by separator
+    let redirect_path = redirect_url.path();
+    let prefix_path = prefix_url.path();
+
+    if prefix_path == "/" {
+        // Allow any path when prefix is just "/"
+        return Ok(());
+    }
+
+    if redirect_path == prefix_path {
+        // Exact path match
+        return Ok(());
+    }
+
+    if redirect_path.starts_with(prefix_path) {
+        // Must be followed by a path separator
+        if redirect_path.len() > prefix_path.len()
+            && redirect_path.as_bytes()[prefix_path.len()] == b'/'
+        {
+            return Ok(());
+        }
+    }
+
+    Err(AppError::BadRequest(
+        "redirect_uri is not allowed for this client".into(),
+    ))
+}
+
+/// Percent-decodes a component string using form URL decoding rules.
+///
+/// Returns the decoded string. If the input contains no percent-encoded characters,
+/// returns it unchanged.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(percent_decode_component("hello"), "hello");
+/// assert_eq!(percent_decode_component("hello%20world"), "hello world");
+/// assert_eq!(percent_decode_component("id%3Avalue"), "id:value");
+/// ```
+fn percent_decode_component(s: &str) -> String {
+    url::form_urlencoded::parse(s.as_bytes())
+        .next()
+        .map(|(k, _)| k.into_owned())
+        .unwrap_or_else(|| s.to_string())
 }
 
 /// Extracts HTTP Basic credentials from the `Authorization` header.
@@ -466,13 +514,18 @@ fn parse_basic_auth(headers: &HeaderMap) -> (Option<String>, Option<String>) {
     let Ok(as_str) = std::str::from_utf8(&decoded) else {
         return (None, None);
     };
-    // Clients are allowed to URL-encode the two components per RFC 6749
-    // section 2.3.1 before joining them with `:`. jsonwebtoken + reqwest's
-    // basic_auth don't bother; neither do we — most callers will match.
-    match as_str.split_once(':') {
-        Some((id, secret)) => (Some(id.to_string()), Some(secret.to_string())),
-        None => (None, None),
-    }
+    // Clients are allowed to percent-encode the two components per RFC 6749
+    // section 2.3.1 (application/x-www-form-urlencoded) before joining them
+    // with `:`. We decode both components to handle this correctly.
+    let Some((id_raw, secret_raw)) = as_str.split_once(':') else {
+        return (None, None);
+    };
+
+    // Percent-decode both components using form URL decoding
+    let id_decoded = percent_decode_component(id_raw);
+    let secret_decoded = percent_decode_component(secret_raw);
+
+    (Some(id_decoded), Some(secret_decoded))
 }
 
 /// Performs a constant-time equality check of two byte slices.
