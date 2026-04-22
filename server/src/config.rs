@@ -8,11 +8,21 @@ use std::net::SocketAddr;
 /// party against `redirect_uri_prefix` using a literal starts-with check.
 /// This is deliberately strict: a mis-configured wildcard here would let any
 /// site receive authorization codes minted for this client.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ClientConfig {
     pub client_id: String,
     pub client_secret: String,
     pub redirect_uri_prefix: String,
+}
+
+impl std::fmt::Debug for ClientConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientConfig")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .field("redirect_uri_prefix", &self.redirect_uri_prefix)
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -211,7 +221,6 @@ impl Config {
 
     /// Finds a registered OAuth client by its client identifier.
     ///
-    —
     /// Returns `Some(&ClientConfig)` when a client with the given id exists, `None` otherwise.
     ///
     /// # Examples

@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
         .route("/api/login", post(auth::login))
         .route("/api/me", get(auth::me))
         .route("/api/oauth/authorize", post(oauth::authorize))
+        .route("/api/oauth/authorize/validate", post(oauth::authorize_validate))
         .route("/oauth/token", post(oauth::token))
         .route("/oauth/userinfo", get(oauth::userinfo))
         .route("/health", get(|| async { "ok" }))

@@ -21,7 +21,7 @@ export default function OAuthAuthorize() {
 
   const clientId = params.get('client_id') ?? '';
   const redirectUri = params.get('redirect_uri') ?? '';
-  const responseType = params.get('response_type') ?? 'code';
+  const responseType = params.get('response_type');
   const state = params.get('state') ?? '';
   const scope = params.get('scope') ?? '';
 
@@ -34,7 +34,7 @@ export default function OAuthAuthorize() {
     window.location.replace(loginUrl.toString());
   }, []);
 
-  const missing = !clientId || !redirectUri;
+  const missing = !clientId || !redirectUri || !responseType;
   const wrongType = responseType !== 'code';
 
   /**
@@ -84,10 +84,9 @@ export default function OAuthAuthorize() {
     try {
       // Validate the client_id/redirect_uri pair with the server to ensure
       // it's an allowed redirect target before performing the client-side redirect.
-      // We use the authorize endpoint with a special check: if the server accepts
-      // the parameters (returns redirect_url), we know the redirect_uri is valid.
-      // Then we construct our own error redirect instead of following the success path.
-      await apiFetch<{ redirect_url: string }>('/api/oauth/authorize', {
+      // We use the validate endpoint which only verifies parameters without
+      // minting an AuthCode. This allows us to safely construct error redirects.
+      const res = await apiFetch<{ redirect_url: string }>('/api/oauth/authorize/validate', {
         method: 'POST',
         body: JSON.stringify({
           client_id: clientId,
@@ -99,9 +98,8 @@ export default function OAuthAuthorize() {
       });
 
       // Server validated the redirect_uri, safe to redirect with error
-      const u = new URL(redirectUri);
+      const u = new URL(res.redirect_url);
       u.searchParams.set('error', 'access_denied');
-      if (state) u.searchParams.set('state', state);
       window.location.href = u.toString();
     } catch {
       // Validation failed or other error — don't redirect to potentially malicious URL

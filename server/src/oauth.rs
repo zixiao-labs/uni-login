@@ -168,6 +168,55 @@ pub struct AuthorizeResponse {
     pub redirect_url: String,
 }
 
+/// Validate an OAuth authorization request without minting an authorization code.
+///
+/// Performs the same client and redirect URI validation as `authorize`, but does not
+/// create or store an `AuthCode` entry. Returns only the validated `redirect_url`.
+/// Used by the frontend to safely construct error redirects when the user denies consent.
+///
+/// # Errors
+///
+/// Returns `AppError::BadRequest` for invalid `response_type` or malformed
+/// `redirect_uri`, and `AppError::Unauthorized` for missing/invalid session
+/// token or unknown client. Other JWT verification failures are propagated.
+pub async fn authorize_validate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<AuthorizeRequest>,
+) -> Result<Json<AuthorizeResponse>, AppError> {
+    if req.response_type != "code" {
+        return Err(AppError::BadRequest(
+            "unsupported_response_type; only \"code\" is allowed".into(),
+        ));
+    }
+    let session_token = bearer_token(&headers).ok_or_else(|| {
+        AppError::Unauthorized("must be signed in to authorize an OAuth request".into())
+    })?;
+    verify_jwt(
+        state.config.jwt_secret.as_bytes(),
+        &session_token,
+        SESSION_AUDIENCE,
+    )?;
+    let client = state
+        .config
+        .find_client(&req.client_id)
+        .ok_or_else(|| AppError::Unauthorized("unknown client_id".into()))?;
+    ensure_redirect_uri_allowed(client, &req.redirect_uri)?;
+
+    // Return the validated redirect_uri without minting a code
+    let mut url = url::Url::parse(&req.redirect_uri)
+        .map_err(|_| AppError::BadRequest("redirect_uri is not a valid URL".into()))?;
+
+    // Don't add code parameter, just return the base URL for the caller to add error params
+    if let Some(s) = req.state.as_deref() {
+        url.query_pairs_mut().append_pair("state", s);
+    }
+
+    Ok(Json(AuthorizeResponse {
+        redirect_url: url.into(),
+    }))
+}
+
 /// Mint an authorization code for the authenticated user and return a redirect URL
 /// that includes the code (and the original `state` if provided).
 ///
@@ -412,6 +461,14 @@ pub struct UserInfoResponse {
 fn ensure_redirect_uri_allowed(client: &ClientConfig, redirect_uri: &str) -> Result<(), AppError> {
     let redirect_url = url::Url::parse(redirect_uri)
         .map_err(|_| AppError::BadRequest("redirect_uri is not a valid URL".into()))?;
+
+    // Reject redirect URIs with fragments per OAuth 2.0 spec
+    if redirect_url.fragment().is_some() {
+        return Err(AppError::BadRequest(
+            "redirect_uri must not contain fragment".into(),
+        ));
+    }
+
     let prefix_url = url::Url::parse(&client.redirect_uri_prefix)
         .map_err(|_| AppError::BadRequest("redirect_uri_prefix is not a valid URL".into()))?;
 
